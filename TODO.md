@@ -1,0 +1,2 @@
+- is there syntax highlighting for Mikrotik in VS Code?
+- get home router root config up to date (ie. reserve shed AP & KVM)
