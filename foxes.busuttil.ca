@@ -1,4 +1,5 @@
 :delay 15s
+# Apply with /system reset-configuration no-defaults=yes run-after-reset=flash/reset.rsc
 # 2024-04-07 06:09:12 by RouterOS 7.14.2
 # software id = W4SZ-44HC
 #
@@ -6,15 +7,18 @@
 # serial number = HF709C325PE
 
 /system identity set name="Router"
+/user set admin password="$ADMIN_PW"
+/ip service set ssh disabled=no port=22 address=""
+/ip service set winbox disabled=no port=8291 address=""
 /interface bridge add admin-mac=78:9A:18:87:93:68 auto-mac=no comment=defconf name=bridge port-cost-mode=short
 
 /interface wifi set [ find default-name=wifi1 ] \
     channel.band=2ghz-n \
-    country=canada \
-    .skip-dfs-channels=10min-cac \
-    .width=20/40mhz \
+    channel.skip-dfs-channels=10min-cac \
+    channel.width=20/40mhz \
+    configuration.country=Canada \
     configuration.mode=ap \
-    .ssid="Foxes by the Lakes" \
+    configuration.ssid="Foxes by the Lakes" \
     disabled=no \
     security.passphrase="$WIFI_PW" \
     security.authentication-types=wpa2-psk
@@ -36,6 +40,7 @@
 /interface list member add comment=defconf interface=ether1 list=WAN
 
 /ip pool add name=dhcp ranges=192.168.1.10-192.168.1.254
+/ip pool add name=ovpn-pool ranges=10.77.77.2-10.77.77.254
 /ip address add address=192.168.1.1/24 comment=defconf interface=ether2 network=192.168.1.0
 /ip dhcp-server add address-pool=dhcp interface=bridge name=defconf
 /ip dhcp-server network add address=192.168.1.0/24 comment=defconf gateway=192.168.1.1 netmask=24
@@ -81,14 +86,15 @@ add address=192.168.1.31 client-id=1:2c:6d:c1:8f:ab:6f comment=MikesLap mac-addr
 add address=192.168.1.15 client-id=1:48:8f:5a:fa:f3:ef comment="Garage AP" mac-address=48:8F:5A:FA:F3:EF server=defconf
 
 /ip firewall filter
-add action=drop chain=forward comment="KVM: no internet" src-address=192.168.1.41 out-interface-list=WAN place-before=0
+add action=drop chain=forward comment="KVM: no internet" src-address=192.168.1.41 out-interface-list=WAN
 add action=drop chain=forward comment="Cloudbreak/Martti TURN & STUN server blocking" disabled=yes dst-address=34.194.229.100
 add action=drop chain=forward comment="Cloudbreak/Martti SFU server blocking" disabled=yes dst-address=44.196.19.180
-add action=accept chain=input comment="ssh access (needs locking down)" disabled=yes dst-port=22 in-interface=ether1 protocol=tcp
 add action=accept chain=input comment="defconf: accept established,related,untracked" connection-state=established,related,untracked
 add action=drop chain=input comment="defconf: drop invalid" connection-state=invalid
 add action=accept chain=input comment="defconf: accept ICMP" protocol=icmp
 add action=accept chain=input comment="defconf: accept to local loopback (for CAPsMAN)" dst-address=127.0.0.1
+add action=accept chain=input comment="Remote SSH and Winbox" dst-port=22,8291 in-interface=MNSi protocol=tcp
+add chain=input action=accept in-interface=MNSi protocol=tcp dst-port=1194 comment="OVPN: allow TCP 1194"
 add action=drop chain=input comment="defconf: drop all not coming from LAN" in-interface-list=!LAN
 add action=accept chain=forward comment="defconf: accept in ipsec policy" ipsec-policy=in,ipsec
 add action=accept chain=forward comment="defconf: accept out ipsec policy" ipsec-policy=out,ipsec
@@ -98,6 +104,7 @@ add action=drop chain=forward comment="defconf: drop invalid" connection-state=i
 add action=drop chain=forward comment="defconf: drop all from WAN not DSTNATed" connection-nat-state=!dstnat connection-state=new in-interface-list=WAN
 
 /ip firewall nat
+add chain=srcnat src-address=10.77.77.0/24 dst-address=192.168.1.0/24 out-interface=bridge action=src-nat to-addresses=192.168.1.1 comment="OVPN: LAN compatibility"
 add action=masquerade chain=srcnat comment="hairpin NAT (loopback)... that doesn't work :/" dst-address=192.168.1.31 out-interface=bridge protocol=tcp src-address=192.168.1.0/24
 add action=dst-nat chain=dstnat comment="web server on laptop" dst-port=443,80 in-interface=MNSi protocol=tcp to-addresses=192.168.1.31
 add action=accept chain=srcnat dst-address=72.38.223.1 src-address=72.38.41.25
@@ -137,3 +144,16 @@ add action=accept chain=forward comment="defconf: accept ipsec AH" protocol=ipse
 add action=accept chain=forward comment="defconf: accept ipsec ESP" protocol=ipsec-esp
 add action=accept chain=forward comment="defconf: accept all that matches ipsec policy" ipsec-policy=in,ipsec
 add action=drop chain=forward comment="defconf: drop everything else not coming from LAN" in-interface-list=!LAN
+
+/certificate add name=ovpn-ca-template common-name=foxes-vpn-ca key-size=2048 days-valid=3650 key-usage=key-cert-sign,crl-sign
+/certificate sign ovpn-ca-template name=ovpn-ca
+:delay 3s
+/certificate set ovpn-ca trusted=yes
+/certificate add name=ovpn-server-template common-name=foxes.busuttil.ca subject-alt-name=DNS:foxes.busuttil.ca key-size=2048 days-valid=3650 key-usage=digital-signature,key-encipherment,tls-server
+/certificate sign ovpn-server-template ca=ovpn-ca name=ovpn-server
+:delay 3s
+/certificate add name=ovpn-client-template common-name=foxes-vpn-client key-size=2048 days-valid=3650 key-usage=digital-signature,key-encipherment,tls-client
+/certificate sign ovpn-client-template ca=ovpn-ca name=ovpn-client
+
+/ppp profile add name=ovpn-home local-address=10.77.77.1 remote-address=ovpn-pool dns-server=192.168.1.1 interface-list=LAN only-one=yes change-tcp-mss=yes use-ipv6=no
+/interface ovpn-server server set enabled=yes mode=ip protocol=tcp port=1194 netmask=24 default-profile=ovpn-home certificate=ovpn-server require-client-certificate=yes auth=sha256 cipher=aes256-cbc tls-version=only-1.2

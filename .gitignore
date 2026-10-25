@@ -1,2 +1,4 @@
+/rsc/*
+!/rsc/.gitkeep
+/vpn/
 .env
-rsc/*
